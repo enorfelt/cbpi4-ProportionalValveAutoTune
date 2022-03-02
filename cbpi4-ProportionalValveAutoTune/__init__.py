@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-import os
+import time
+import math
 import board
 import busio
 import adafruit_mcp4725
@@ -48,98 +49,110 @@ class PropValveAutoTune(CBPiActor):
 
     async def on_start(self):
         self.state = False
+    
+    async def on_stop(self):
+        self.state = False
+        self.running = False
+        self.finished = False
+        if self.props.get("PumpActor", None) is not None:
+            await self.cbpi.actor.off(self.props.get("PumpActor"))
 
     async def on(self, power=0):
-        self._logger.info("ACTOR 1111 %s ON" % self.id)
         self.state = True
 
     async def auto_off(self):
         self.finished=True
 
     async def off(self):
-        self._logger.info("ACTOR %s OFF " % self.id)
         self.state = False
 
     def get_state(self):
         return self.state
 
     async def run(self):
-        self.finished = False
-        setpoint = self.target
-        current_value = self.cbpi.sensor.get_sensor_value(self.volume_sensor).get("value")
+        while self.running == True:
+            if self.state == True:
+                self.finished = False
+                setpoint = self.target
+                current_value = self.cbpi.sensor.get_sensor_value(self.volume_sensor).get("value")
 
-        if setpoint is None:
-            self.cbpi.notify('PID AutoTune', 'You have not defined a target volume. System will set target to {} L and start AutoTune'.format(
-                15), NotificationType.WARNING)
-            setpoint = 15
-            await self.settarget(setpoint)
+                if setpoint is None:
+                    self.cbpi.notify('PID AutoTune', 'You have not defined a target volume. System will set target to {} L and start AutoTune'.format(
+                        15), NotificationType.WARNING)
+                    setpoint = 15
+                    await self.settarget(setpoint)
 
-        if setpoint < current_value:
-            self.cbpi.notify(
-                'PID AutoTune', 'Your target volume is above the current volume. Choose a higher setpoint or wait until volume is below target volume and restart AutoTune', NotificationType.ERROR)
-            # await self.actor_off(self.heater)
-            await self.off()
+                if setpoint < current_value:
+                    self.cbpi.notify(
+                        'PID AutoTune', 'Your target volume is above the current volume. Choose a higher setpoint or wait until volume is below target volume and restart AutoTune', NotificationType.ERROR)
+                    # await self.actor_off(self.heater)
+                    await self.off()
 
-        self.cbpi.notify(
-            'PID AutoTune', 'AutoTune In Progress. Do not turn off Auto mode until AutoTuning is complete', NotificationType.INFO)
+                if self.props.get("PumpActor", None) is not None:
+                    await self.cbpi.actor.on(self.props.get("PumpActor"), 100)
 
-        sampleTime = 2
-        wait_time = 2
-        outstep = float(self.props.get("Output_Step", 100))
-        outmax = float(self.props.get("Max_Output", 100))
-        lookbackSec = float(self.props.get("lockback_seconds", 20))
-        open_percent_old = 0
-        try:
-            atune = AutoTuner(setpoint, outstep, sampleTime,
-                              lookbackSec, 0, outmax)
-        except Exception as e:
-            self.cbpi.notify('PID autoTune', 'AutoTune Error: {}'.format(
-                str(e)), NotificationType.ERROR)
-            atune.log(str(e))
-            await self.auto_off()
-        atune.log("AutoTune will now begin")
+                self.cbpi.notify(
+                    'PID AutoTune', 'AutoTune In Progress. Do not turn off Auto mode until AutoTuning is complete', NotificationType.INFO)
 
-        try:
-            await self.set_open(open_percent_old)
-            while self.running == True and not atune.run(self.cbpi.sensor.get_sensor_value(self.volume_sensor).get("value")):
-                open_percent = atune.output
-                if open_percent != open_percent_old:
-                    await self.set_open(open_percent)
-                    open_percent_old = open_percent
-                await asyncio.sleep(sampleTime)
+                sampleTime = 2
+                wait_time = 2
+                outstep = float(self.props.get("Output_Step", 100))
+                outmax = float(self.props.get("Max_Output", 100))
+                lookbackSec = float(self.props.get("lockback_seconds", 20))
+                open_percent_old = 0
+                try:
+                    atune = AutoTuner(setpoint, outstep, sampleTime,
+                                    lookbackSec, 0, outmax)
+                except Exception as e:
+                    self.cbpi.notify('PID autoTune', 'AutoTune Error: {}'.format(
+                        str(e)), NotificationType.ERROR)
+                    atune.log(str(e))
+                    await self.auto_off()
+                atune.log("AutoTune will now begin")
 
-            await self.auto_off()
+                try:
+                    await self.set_open(open_percent_old)
+                    while not atune.run(self.cbpi.sensor.get_sensor_value(self.volume_sensor).get("value")):
+                        open_percent = atune.output
+                        if open_percent != open_percent_old:
+                            await self.set_open(open_percent)
+                            open_percent_old = open_percent
+                        await asyncio.sleep(sampleTime)
 
-            if atune.state == atune.STATE_SUCCEEDED:
-                atune.log("AutoTune has succeeded")
-                for rule in atune.tuningRules:
-                    params = atune.getPIDParameters(rule)
-                    atune.log('rule: {0}'.format(rule))
-                    atune.log('P: {0}'.format(params.Kp))
-                    atune.log('I: {0}'.format(params.Ki))
-                    atune.log('D: {0}'.format(params.Kd))
-                    if rule == "brewing":
-                        self.cbpi.notify('AutoTune has succeeded', "P Value: %.8f | I Value: %.8f | D Value: %.8f" % (
-                            params.Kp, params.Ki, params.Kd), action=[NotificationAction("OK")])
-            elif atune.state == atune.STATE_FAILED:
-                atune.log("AutoTune has failed")
-                self.cbpi.notify('PID AutoTune Error', "PID AutoTune has failed", action=[
-                                 NotificationAction("OK")])
+                    await self.auto_off()
 
-        except asyncio.CancelledError as e:
-            pass
-        except Exception as e:
-            logging.error("PIDAutoTune Error {}".format(e))
-            # await self.actor_off(self.heater)
-            await self.stop()
-            pass
-        finally:
-            # await self.actor_off(self.heater)
-            await self.stop()
-            pass
+                    if atune.state == atune.STATE_SUCCEEDED:
+                        atune.log("AutoTune has succeeded")
+                        for rule in atune.tuningRules:
+                            params = atune.getPIDParameters(rule)
+                            atune.log('rule: {0}'.format(rule))
+                            atune.log('P: {0}'.format(params.Kp))
+                            atune.log('I: {0}'.format(params.Ki))
+                            atune.log('D: {0}'.format(params.Kd))
+                            if rule == "brewing":
+                                self.cbpi.notify('AutoTune has succeeded', "P Value: %.8f | I Value: %.8f | D Value: %.8f" % (
+                                    params.Kp, params.Ki, params.Kd), action=[NotificationAction("OK")])
+                    elif atune.state == atune.STATE_FAILED:
+                        atune.log("AutoTune has failed")
+                        self.cbpi.notify('PID AutoTune Error', "PID AutoTune has failed", action=[
+                                        NotificationAction("OK")])
+
+                except asyncio.CancelledError as e:
+                    pass
+                except Exception as e:
+                    self._logger.error("PIDAutoTune Error {}".format(e))
+                    # await self.actor_off(self.heater)
+                    await self.stop()
+                    pass
+                finally:
+                    # await self.actor_off(self.heater)
+                    await self.stop()
+                    pass
+            else:
+                asyncio.sleep(1)
     
     async def set_open(self, Open):
-        logger.info("set_open %s" % Open)
+        self._logger.info("set_open %s" % Open)
         self.open = Open
         self.dac.normalized_value = float(self.open / 100)
         await self.cbpi.actor.actor_update(self.id, Open)
@@ -227,7 +240,7 @@ class AutoTuner(object):
         return AutoTuner.PIDParams(kp, ki, kd)
 
     def log(self, text):
-        filename = "./logs/autotune.log"
+        filename = "./logs/valve-autotune.log"
         formatted_time = strftime("%Y-%m-%d %H:%M:%S", localtime())
 
         with open(filename, "a") as file:
