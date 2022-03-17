@@ -149,7 +149,7 @@ class PropValveAutoTune(CBPiActor):
                     await self.stop()
                     pass
             else:
-                asyncio.sleep(1)
+                await asyncio.sleep(1)
     
     async def set_open(self, Open):
         self._logger.info("set_open %s" % Open)
