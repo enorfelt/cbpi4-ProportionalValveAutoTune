@@ -48,23 +48,20 @@ class PropValveAutoTune(CBPiActor):
             self.target = 0
 
     async def on_start(self):
-        self.state = False
-    
-    async def on_stop(self):
-        self.state = False
-        self.running = False
-        self.finished = False
-        if self.props.get("PumpActor", None) is not None:
-            await self.cbpi.actor.off(self.props.get("PumpActor"))
+        self.state = False        
 
     async def on(self, power=0):
         self.state = True
 
     async def auto_off(self):
         self.finished=True
+        self.state = False
 
     async def off(self):
         self.state = False
+        self.finished = False
+        if self.props.get("PumpActor", None) is not None:
+            await self.cbpi.actor.off(self.props.get("PumpActor"))
 
     def get_state(self):
         return self.state
