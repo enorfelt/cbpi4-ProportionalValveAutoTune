@@ -160,7 +160,7 @@ class PropValveAutoTune(CBPiActor):
 
 class AutoTuner(object):
     PIDParams = namedtuple('PIDParams', ['Kp', 'Ki', 'Kd'])
-    PEAK_AMPLITUDE_TOLERANCE = 0.05
+    PEAK_AMPLITUDE_TOLERANCE = 0.8
     STATE_OFF = 'off'
     STATE_RELAY_STEP_UP = 'relay step up'
     STATE_RELAY_STEP_DOWN = 'relay step down'
